@@ -10,11 +10,12 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { QuestionType } from '@prisma/client';
+import { QuestionImageArchiveDto } from '../../files/dto/question-image-archive.dto';
 
 /**
  * 题库归档格式版本号。未来归档结构演进时递增, 导入时按版本路由解析逻辑。
  */
-export const BANK_ARCHIVE_VERSION = 1;
+export const BANK_ARCHIVE_VERSION = 2;
 
 /**
  * 归档导入冲突处理策略:
@@ -75,6 +76,12 @@ export class BankArchiveDto {
   @ValidateNested({ each: true })
   @Type(() => ArchiveQuestionDto)
   questions!: ArchiveQuestionDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => QuestionImageArchiveDto)
+  images?: QuestionImageArchiveDto[];
 }
 
 /** POST /question-banks/import 的请求体 */
@@ -105,6 +112,7 @@ export class ImportBankArchiveDto {
 export class ImportSummaryDto {
   @IsNumber() categoriesImported!: number;
   @IsNumber() questionsImported!: number;
+  @IsOptional() @IsNumber() imagesImported?: number;
   @IsNumber() skipped!: number;
   @IsArray()
   @IsObject({ each: true })
