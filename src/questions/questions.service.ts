@@ -23,6 +23,9 @@ import {
   LocalizedQuestion,
 } from '../common/utils/localize';
 import * as ExcelJS from 'exceljs';
+import { randomUUID } from 'node:crypto';
+import { QuestionImageArchiveService } from '../files/question-image-archive.service';
+import { QuestionImageArchiveDto } from '../files/dto/question-image-archive.dto';
 
 const QUESTION_TYPE_LABEL: Record<string, string> = {
   single: '单选题',
@@ -43,6 +46,7 @@ export class QuestionsService {
     private prisma: PrismaService,
     private bankPermission: BankPermissionService,
     private questionImages: QuestionImagesService,
+    private imageArchive: QuestionImageArchiveService,
   ) {}
 
   async create(dto: CreateQuestionDto, userId: string, role: string) {
@@ -229,6 +233,9 @@ export class QuestionsService {
       orderBy: { id: 'desc' },
     });
 
+    const images = await this.imageArchive.export(
+      questions.map((question) => question.id),
+    );
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('题目');
 
@@ -245,8 +252,13 @@ export class QuestionsService {
       { header: '翻译', key: 'translations', width: 60 },
     ];
 
+    if (images.length > 0) {
+      sheet.getColumn(11).header = '图片数';
+      sheet.getColumn(12).header = '题目 ID';
+      sheet.getColumn(12).hidden = true;
+    }
     for (const q of questions) {
-      sheet.addRow({
+      const row = sheet.addRow({
         title: q.title,
         type: QUESTION_TYPE_LABEL[q.type] ?? q.type,
         options: q.options ?? '',
@@ -258,7 +270,14 @@ export class QuestionsService {
         locale: q.locale ?? 'zh',
         translations: q.translations ?? '',
       });
+      if (images.length > 0) {
+        row.getCell(11).value = images.filter(
+          (image) => image.questionId === q.id,
+        ).length;
+        row.getCell(12).value = q.id;
+      }
     }
+    this.imageArchive.writeExcel(workbook, sheet, images);
 
     const buffer = await workbook.xlsx.writeBuffer();
     return Buffer.from(buffer);
@@ -273,7 +292,7 @@ export class QuestionsService {
     if (role !== Role.super_admin && role !== Role.question_admin) {
       await this.bankPermission.requirePermission(userId, bankId, 'editor');
     }
-    return this.importExcelRows(this.prisma, bankId, file);
+    return this.importExcelRows(this.prisma, bankId, file, userId);
   }
 
   async createBankFromExcel(
@@ -283,27 +302,36 @@ export class QuestionsService {
   ) {
     const name = dto.name.trim();
     if (!name) throw new BadRequestException('题库名称不能为空');
-    return this.prisma.$transaction(
-      async (tx) => {
-        const bank = await tx.questionBank.create({
-          data: {
-            name,
-            description: dto.description,
-            createdBy: userId,
-          },
-        });
-        const summary = await this.importExcelRows(tx, bank.id, file, true);
-        if (summary.failed > 0 || summary.success === 0) {
-          const errors = summary.errors.map(
-            (error) => `第 ${error.row} 行: ${error.message}`,
+    return this.imageArchive.withStorageRollback((uploadedKeys) =>
+      this.prisma.$transaction(
+        async (tx) => {
+          const bank = await tx.questionBank.create({
+            data: {
+              name,
+              description: dto.description,
+              createdBy: userId,
+            },
+          });
+          const summary = await this.importExcelRows(
+            tx,
+            bank.id,
+            file,
+            userId,
+            true,
+            uploadedKeys,
           );
-          throw new BadRequestException(
-            errors.length > 0 ? errors : 'Excel 无有效数据行',
-          );
-        }
-        return { bankId: bank.id, summary };
-      },
-      { timeout: 30000 },
+          if (summary.failed > 0 || summary.success === 0) {
+            const errors = summary.errors.map(
+              (error) => `第 ${error.row} 行: ${error.message}`,
+            );
+            throw new BadRequestException(
+              errors.length > 0 ? errors : 'Excel 无有效数据行',
+            );
+          }
+          return { bankId: bank.id, summary };
+        },
+        { timeout: 120000 },
+      ),
     );
   }
 
@@ -311,7 +339,9 @@ export class QuestionsService {
     prisma: Prisma.TransactionClient,
     bankId: string,
     file: Express.Multer.File,
+    userId: string,
     createCategories = false,
+    uploadedKeys: string[] = [],
   ): Promise<ImportResultDto> {
     const workbook = new ExcelJS.Workbook();
     try {
@@ -330,6 +360,39 @@ export class QuestionsService {
       };
     }
 
+    const images = this.imageArchive.readExcel(workbook, sheet);
+    const sourceQuestions = new Map<string, { options: string | null }>();
+    sheet.eachRow((row, index) => {
+      if (index > 1) {
+        const id = this.imageArchive.excelQuestionId(row);
+        if (images.length > 0 && sourceQuestions.has(id))
+          throw new BadRequestException(
+            `第 ${index} 行: 图片关联的题目 ID 重复`,
+          );
+        sourceQuestions.set(id, {
+          options: row.getCell(3).text.trim() || null,
+        });
+      }
+    });
+    this.imageArchive.validate(images, sourceQuestions);
+    const imagesByQuestion = new Map<string, QuestionImageArchiveDto[]>();
+    for (const image of images) {
+      const entries = imagesByQuestion.get(image.questionId) ?? [];
+      entries.push(image);
+      imagesByQuestion.set(image.questionId, entries);
+    }
+    sheet.eachRow((row, index) => {
+      if (
+        index > 1 &&
+        typeof row.getCell(11).value === 'number' &&
+        row.getCell(11).value !==
+          (imagesByQuestion.get(this.imageArchive.excelQuestionId(row))
+            ?.length ?? 0)
+      ) {
+        throw new BadRequestException(`第 ${index} 行: 图片数据缺失`);
+      }
+    });
+
     const categories = await prisma.category.findMany({
       where: { bankId },
     });
@@ -338,6 +401,11 @@ export class QuestionsService {
     const errors: { row: number; message: string }[] = [];
     const questionsToCreate: Prisma.QuestionCreateManyInput[] = [];
     let success = 0;
+    let imagesImported = 0;
+    const questionIdMap = new Map<
+      string,
+      { id: string; options: string | null }
+    >();
 
     for (let rowNum = 2; rowNum <= sheet.rowCount; rowNum++) {
       const row = sheet.getRow(rowNum);
@@ -424,7 +492,11 @@ export class QuestionsService {
           categoryId = category.id;
           categoryNameMap.set(categoryName, categoryId);
         }
+        const id = randomUUID();
+        const sourceId = this.imageArchive.excelQuestionId(row);
+        const targetQuestion = { id, options: options ?? null };
         const data: Prisma.QuestionCreateManyInput = {
+          id,
           title,
           type,
           options,
@@ -439,8 +511,30 @@ export class QuestionsService {
         };
         if (createCategories) {
           questionsToCreate.push(data);
+          questionIdMap.set(sourceId, targetQuestion);
         } else {
-          await prisma.question.create({ data });
+          const rowImages = imagesByQuestion.get(sourceId) ?? [];
+          if (rowImages.length > 0) {
+            imagesImported += await this.imageArchive.withStorageRollback(
+              (keys) =>
+                this.prisma.$transaction(
+                  async (tx) => {
+                    await tx.question.create({ data });
+                    return this.imageArchive.restore(
+                      tx,
+                      rowImages,
+                      new Map([[sourceId, targetQuestion]]),
+                      bankId,
+                      userId,
+                      keys,
+                    );
+                  },
+                  { timeout: 120000 },
+                ),
+            );
+          } else {
+            await prisma.question.create({ data });
+          }
           success++;
         }
       } catch (error) {
@@ -456,9 +550,17 @@ export class QuestionsService {
         data: questionsToCreate,
       });
       success = result.count;
+      imagesImported = await this.imageArchive.restore(
+        prisma,
+        images,
+        questionIdMap,
+        bankId,
+        userId,
+        uploadedKeys,
+      );
     }
     const total = sheet.rowCount - 1;
-    return { total, success, failed: errors.length, errors };
+    return { total, success, failed: errors.length, errors, imagesImported };
   }
 
   private parseOptions<T extends Question>(question: T) {
