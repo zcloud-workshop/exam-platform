@@ -6,6 +6,7 @@ import request from 'supertest';
 import * as dotenv from 'dotenv';
 import { execFileSync } from 'node:child_process';
 import type { Server } from 'node:http';
+import { json } from 'express';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
@@ -116,6 +117,8 @@ export async function createTestApp(): Promise<TestContext> {
     .compile();
 
   const app = moduleFixture.createNestApplication<INestApplication<Server>>();
+  app.use('/api/question-banks', json({ limit: '11mb' }));
+  app.use(json());
   app.setGlobalPrefix('api');
   app.useGlobalPipes(
     new ValidationPipe({
