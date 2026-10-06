@@ -71,7 +71,7 @@ describe('Bank Archive (e2e)', () => {
     const body = responseData<BankArchiveDto>(res);
     expect(body.meta.id).toBe(bankId);
     expect(body.meta.name).toBe('空题库');
-    expect(body.meta.version).toBe(1);
+    expect(body.meta.version).toBe(2);
     expect(body.meta.exportedAt).toBeTruthy();
     expect(body.categories).toEqual([]);
     expect(body.questions).toEqual([]);
@@ -513,7 +513,7 @@ describe('Bank Archive (e2e)', () => {
       .req()
       .post('/api/question-banks/import')
       .set('Authorization', `Bearer ${adminToken}`)
-      .send({ archive: { ...archive, meta: { ...archive.meta, version: 2 } } })
+      .send({ archive: { ...archive, meta: { ...archive.meta, version: 3 } } })
       .expect(400);
     await ctx
       .req()
