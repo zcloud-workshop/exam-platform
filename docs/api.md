@@ -109,15 +109,16 @@ Cookie 路径为 `/api`, 始终 `HttpOnly`; 生产环境使用 `Secure` 和 `Sam
 
 | 字段           | 内容                                                                                                  |
 | -------------- | ----------------------------------------------------------------------------------------------------- |
-| `meta`         | `id, name, description?, exportedAt, version`, 导出版本为 `1`                                         |
+| `meta`         | `id, name, description?, exportedAt, version`, 导出版本为 `2`                                         |
 | `categories[]` | `id, name, parentId?`                                                                                 |
 | `questions[]`  | `id, title, type, options?, answer, analysis?, difficulty, score, categoryId?, locale, translations?` |
+| `images[]`     | `questionId, originalName, mimeType, size, optionKey?, data`, `data` 为原图片的 Base64, 版本 `2` 必须包含此数组 |
 
-归档中的 `options` 和 `translations` 保留 JSON 字符串. `mode` 为 `skip` (默认), `merge` 或 `overwrite`. `skip` 和 `merge` 按目标已有分类名称, 题目 `title+type` 跳过重复内容; `overwrite` 先清空目标题库的题目和分类, 有试卷引用或题目图片时拒绝. 整次导入在一个事务内完成, 新记录生成新 ID.
+归档中的 `options` 和 `translations` 保留 JSON 字符串. `mode` 为 `skip` (默认), `merge` 或 `overwrite`. `skip` 和 `merge` 按目标已有分类名称, 题目 `title+type` 跳过重复内容, 跳过题目的图片也不重复导入; `overwrite` 先清空目标题库的题目和分类, 有试卷引用时拒绝. 旧版本 `1` 不允许覆盖含图片的题库. 整次导入在一个事务内完成, 新记录生成新 ID, 图片按新 ID 恢复关联, 摘要增加 `imagesImported`.
 
-归档只迁移分类和题目, 不包括试卷, 考试, 记录, 分享或文件. 导入已有题库不改写目标元信息. 跳过同名分类时会将源分类 ID 映射到已有分类 ID, 保留新题目和子分类关联.
+归档迁移分类, 题目和题目图片, 不包括试卷, 考试, 记录, 分享或普通文件. 导入已有题库不改写目标元信息. 跳过同名分类时会将源分类 ID 映射到已有分类 ID, 保留新题目和子分类关联.
 
-`POST /question-banks/import` 根据归档创建新题库, 名称使用 `name` 或 `meta.name`, 描述使用 `meta.description`, 所有者为当前用户, 默认不公开. 仅支持归档版本 `1`. 创建题库与导入分类、题目处于同一事务, 失败会回滚. 题库 JSON 请求上限为 11 MB, 前端文件限制为 10 MB.
+`POST /question-banks/import` 根据归档创建新题库, 名称使用 `name` 或 `meta.name`, 描述使用 `meta.description`, 所有者为当前用户, 默认不公开. 支持归档版本 `1` 和 `2`. 创建题库与导入分类, 题目及图片元数据处于同一事务, 失败会回滚并清理本次上传的图片对象. 题库 JSON 请求上限为 101 MiB, 前端文件限制为 100 MiB, 题库导入导出客户端超时为 180 秒.
 
 ## 分类
 
@@ -154,9 +155,11 @@ Cookie 路径为 `/api`, 始终 `HttpOnly`; 生产环境使用 `Secure` 和 `Sam
 
 `translations` 按语言代码保存 `title, options?, answer?, analysis?`. 更新时整体替换该字段. GET 支持按 `locale` 覆盖已翻译的内容, 缺失翻译回退到主内容. `locale` 字段本身仍表示题目主语言. 创建会验证分类属于同一题库; 更新目前未重新验证这一条件. 题目被试卷引用时不能删除.
 
-Excel 接口使用导出文件的列顺序: 标题, 题型, 选项, 答案, 解析, 难度, 分值, 分类, 主语言, 翻译. 题型使用中文名称. 导入只处理首个工作表, 标题, 题型, 答案必填, 选项和翻译列为 JSON 文本. 文件限制 10 MiB, MIME 接受 XLSX 和 Excel 类型, 实际读取器为 XLSX. 导入已有题库时分类必须已存在, 每行独立写入, 允许部分成功; `total` 是表格数据行数, 空行跳过后可能不等于 `success+failed`. `bankId` 与分类列表一样没有查询 DTO 必填校验, 调用时必须显式提供.
+Excel 接口使用导出文件的前十列顺序: 标题, 题型, 选项, 答案, 解析, 难度, 分值, 分类, 主语言, 翻译. 题型使用中文名称. 题目读取首个工作表, 标题, 题型, 答案必填, 选项和翻译列为 JSON 文本. 文件限制 100 MiB, MIME 接受 XLSX 和 Excel 类型, 实际读取器为 XLSX. 导入已有题库时分类必须已存在, 每行题目和附图在同一事务中写入, 允许其他行部分成功; `total` 是表格数据行数, 空行跳过后可能不等于 `success+failed`. 返回摘要增加 `imagesImported`. `bankId` 与分类列表一样没有查询 DTO 必填校验, 调用时必须显式提供.
 
-`POST /questions/import/new-bank` 创建归属当前用户且不公开的题库, 按分类名称自动创建平级分类, 保留双语题目. 创建与批量导入处于同一事务, 无有效题目或任一行出错时返回 400 并回滚. Excel 不包含分类树层级.
+`POST /questions/import/new-bank` 创建归属当前用户且不公开的题库, 按分类名称自动创建平级分类, 保留双语题目及附图. 创建与批量导入处于同一事务, 无有效题目或任一行出错时返回 400 并回滚, 图片上传或持久化失败也回滚并清理本次对象. Excel 不包含分类树层级.
+
+含图片的 Excel 增加第十一列图片数和隐藏的第十二列题目 ID. `题目图片` 工作表提供 PNG/JPEG/GIF 预览, WebP 显示说明并保留原文件. 隐藏的 `_question_images` 表分块保存 Base64 原文件, 大小和题目/选项关联; 导入会校验大小, 图片数和关联, 请保留该表和隐藏 ID. 普通 Excel 直接锚定在题目数据行的内嵌图片也可作为题干图片导入.
 
 ### 题目图片
 
@@ -166,7 +169,7 @@ Excel 接口使用导出文件的列顺序: 标题, 题型, 选项, 答案, 解�
 
 GET 题目列表/详情, GET 试卷列表/详情, GET 考试详情和公开练题列表中的题目新增 `images` 数组, 无图片时为 `[]`. 每项为 `{ id, originalName, mimeType, size, optionKey, url, expiresAt }`, 上传也返回这个结构. `url` 是有效期 15 分钟的 S3 GET 预签名 URL, `expiresAt` 是 ISO 时间. 客户端直接使用 URL 加载图片, 到期后重新读取有权限的题目/试卷/考试/练习接口获取新 URL. URL 不持久化, 获得链接后可在有效期内读取, 删除权限或关闭公开不会立即撤销已签发链接.
 
-对象键前缀为 `question-banks/{bankId}/questions/{questionId}/images/`, 文件名由 UUID 和实际图片类型的扩展名组成. 数据库仅保存关联和对象键, 图片元数据的持久化 `url` 为 `null`. 题库 JSON 归档和 Excel 不导出图片; 归档覆盖含图片的题库会返回 400, 需先明确删除图片. 来源: [图片服务](../src/files/question-images.service.ts), [S3 签名](../src/files/s3.service.ts).
+对象键前缀为 `question-banks/{bankId}/questions/{questionId}/images/`, 文件名由 UUID 和实际图片类型的扩展名组成. 数据库仅保存关联和对象键, 图片元数据的持久化 `url` 为 `null`. JSON 和 Excel 均携带图片原文件, 导入不依赖原图片链接, 按同样的 MIME, 文件头, 单张大小和选项键规则校验, 恢复后使用新的对象键和签名链接. 原图无法读取时导出报错. JSON 覆盖提交成功后清理旧对象; 清理失败记录对象键供运维处理, 不回滚已提交的新题库. 来源: [图片归档服务](../src/files/question-image-archive.service.ts), [图片服务](../src/files/question-images.service.ts), [S3 签名](../src/files/s3.service.ts).
 
 ## 试卷
 
