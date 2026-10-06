@@ -1,3 +1,5 @@
+import { Readable } from 'node:stream';
+import type { BankArchiveDto } from '../src/question-banks/dto/bank-archive.dto';
 import {
   QuestionImagesService,
   QuestionImage,
@@ -435,6 +437,9 @@ describe('Question images (e2e)', () => {
     const question = await ctx.prisma.question.findUniqueOrThrow({
       where: { id: privateQuestionId },
     });
+    jest
+      .spyOn(ctx.app.get(S3Service), 'download')
+      .mockResolvedValueOnce(Readable.from([png]));
     const archive = await ctx
       .req()
       .get(`/api/question-banks/${question.bankId}/export`)
@@ -444,7 +449,14 @@ describe('Question images (e2e)', () => {
       .req()
       .post(`/api/question-banks/${question.bankId}/import`)
       .set('Authorization', `Bearer ${adminToken}`)
-      .send({ archive: responseData<unknown>(archive), mode: 'overwrite' })
+      .send({
+        archive: {
+          ...responseData<BankArchiveDto>(archive),
+          meta: { ...responseData<BankArchiveDto>(archive).meta, version: 1 },
+          images: undefined,
+        },
+        mode: 'overwrite',
+      })
       .expect(400);
     expect(
       await ctx.prisma.file.findUnique({ where: { id: stored.id } }),
