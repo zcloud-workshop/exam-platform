@@ -10,6 +10,7 @@ import {
   createTestApp,
   cleanupTestApp,
   createQuestion,
+  createUserWithId,
 } from './test-utils';
 
 type QuestionResponse = Pick<Question, 'title'> & {
@@ -229,6 +230,49 @@ describe('Bank Archive (e2e)', () => {
     expect(summary.skipped).toBe(1);
   });
 
+  it('跳过已存在分类时, 保留新题目和子分类与该分类的关联', async () => {
+    const bankId = await createBank('分类关联题库');
+    const existingId = await createCategory(bankId, '已有分类');
+    const archive = {
+      meta: {
+        id: 'source',
+        name: '源',
+        exportedAt: new Date().toISOString(),
+        version: 1,
+      },
+      categories: [
+        { id: 'source-parent', name: '已有分类', parentId: null },
+        { id: 'source-child', name: '新子分类', parentId: 'source-parent' },
+      ],
+      questions: [
+        {
+          id: 'source-question',
+          title: '已有分类中的新题',
+          type: 'short',
+          answer: '答案',
+          difficulty: 1,
+          score: 1,
+          locale: 'zh',
+          categoryId: 'source-parent',
+        },
+      ],
+    };
+    await ctx
+      .req()
+      .post(`/api/question-banks/${bankId}/import`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ archive })
+      .expect(201);
+    expect(
+      await ctx.prisma.question.findFirstOrThrow({ where: { bankId } }),
+    ).toMatchObject({ categoryId: existingId });
+    expect(
+      await ctx.prisma.category.findFirstOrThrow({
+        where: { bankId, name: '新子分类' },
+      }),
+    ).toMatchObject({ parentId: existingId });
+  });
+
   it('overwrite 模式: 清空目标库后全量导入, 但被试卷引用时拒绝', async () => {
     const bank = await createBank('overwrite测试题库');
     await createCategory(bank, '旧分类');
@@ -300,6 +344,190 @@ describe('Bank Archive (e2e)', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ archive, mode: 'overwrite' })
       .expect(400);
+  });
+
+  it('一键导入 JSON 创建题库, 保留分类树和双语题目', async () => {
+    const sourceId = await createBank('一键导出源题库');
+    await ctx.prisma.questionBank.update({
+      where: { id: sourceId },
+      data: { description: '归档说明' },
+    });
+    const parentId = await createCategory(sourceId, '根分类');
+    const childId = await createCategory(sourceId, '子分类', parentId);
+    await ctx
+      .req()
+      .post('/api/questions')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        bankId: sourceId,
+        categoryId: childId,
+        title: '双语题目',
+        type: 'single',
+        answer: 'A',
+        options: { A: '选项', B: '其他' },
+        analysis: '解析',
+        locale: 'zh',
+        translations: {
+          en: {
+            title: 'Bilingual question',
+            answer: 'A',
+            analysis: 'Explanation',
+          },
+        },
+      })
+      .expect(201);
+    const exported = await ctx
+      .req()
+      .get(`/api/question-banks/${sourceId}/export`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+    const archive = responseData<BankArchiveDto>(exported);
+    const imported = await ctx
+      .req()
+      .post('/api/question-banks/import')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ archive, name: '导入的新题库' })
+      .expect(201);
+    const { bankId, summary } = responseData<{
+      bankId: string;
+      summary: ImportSummaryDto;
+    }>(imported);
+    expect(summary).toMatchObject({
+      categoriesImported: 2,
+      questionsImported: 1,
+      skipped: 0,
+    });
+    const bank = await ctx.prisma.questionBank.findUniqueOrThrow({
+      where: { id: bankId },
+    });
+    expect(bank).toMatchObject({
+      name: '导入的新题库',
+      description: '归档说明',
+      isPublic: false,
+    });
+    const categories = await ctx.prisma.category.findMany({
+      where: { bankId },
+    });
+    const parent = categories.find((category) => category.name === '根分类')!;
+    const child = categories.find((category) => category.name === '子分类')!;
+    expect(child.parentId).toBe(parent.id);
+    const question = await ctx.prisma.question.findFirstOrThrow({
+      where: { bankId },
+    });
+    expect(question).toMatchObject({
+      ...archive.questions[0],
+      id: expect.any(String) as string,
+      categoryId: child.id,
+    });
+    expect(question.id).not.toBe(archive.questions[0].id);
+  });
+
+  it('教师可以从归档创建自己的题库, 学生和未登录用户不能导入', async () => {
+    const teacher = await createUserWithId(
+      ctx,
+      adminToken,
+      'archive-teacher',
+      'teacher',
+    );
+    const student = await createUserWithId(
+      ctx,
+      adminToken,
+      'archive-student',
+      'student',
+    );
+    const archive = {
+      meta: {
+        id: 'source',
+        name: '教师导入',
+        exportedAt: new Date().toISOString(),
+        version: 1,
+      },
+      categories: [],
+      questions: [],
+    };
+    const imported = await ctx
+      .req()
+      .post('/api/question-banks/import')
+      .set('Authorization', `Bearer ${teacher.token}`)
+      .send({ archive })
+      .expect(201);
+    const { bankId } = responseData<{ bankId: string }>(imported);
+    expect(
+      await ctx.prisma.questionBank.findUniqueOrThrow({
+        where: { id: bankId },
+      }),
+    ).toMatchObject({
+      name: '教师导入',
+      createdBy: teacher.id,
+      isPublic: false,
+    });
+    await ctx
+      .req()
+      .post('/api/question-banks/import')
+      .set('Authorization', `Bearer ${student.token}`)
+      .send({ archive })
+      .expect(403);
+    await ctx
+      .req()
+      .post('/api/question-banks/import')
+      .send({ archive })
+      .expect(401);
+  });
+
+  it('超过 100 KB 的归档可导入, 不支持的版本及缺少元信息返回 400', async () => {
+    const archive = {
+      meta: {
+        id: 'source',
+        name: '大文件归档',
+        exportedAt: new Date().toISOString(),
+        version: 1,
+      },
+      categories: [],
+      questions: [
+        {
+          id: 'q',
+          title: '大文件题目',
+          type: 'short',
+          answer: 'A',
+          analysis: 'a'.repeat(120000),
+          difficulty: 1,
+          score: 1,
+          locale: 'zh',
+        },
+      ],
+    };
+    await ctx
+      .req()
+      .post('/api/question-banks/import')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ archive })
+      .expect(201);
+    await ctx
+      .req()
+      .post(`/api/question-banks/${ctx.bankId}/import`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ archive })
+      .expect(201);
+    const before = await ctx.prisma.questionBank.count();
+    await ctx
+      .req()
+      .post('/api/question-banks/import')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ archive: { ...archive, meta: { ...archive.meta, version: 2 } } })
+      .expect(400);
+    await ctx
+      .req()
+      .post('/api/question-banks/import')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ archive: { categories: [], questions: [] } })
+      .expect(400);
+    await ctx
+      .req()
+      .post('/api/question-banks/import')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({})
+      .expect(400);
+    expect(await ctx.prisma.questionBank.count()).toBe(before);
   });
 
   it('未认证 → 401', async () => {
