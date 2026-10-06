@@ -4,9 +4,12 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
+import { json } from 'express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  app.use('/api/question-banks', json({ limit: '11mb' }));
+  app.use(json());
 
   // 全局路由前缀, 所有接口变为 /api/xxx
   app.setGlobalPrefix('api');
