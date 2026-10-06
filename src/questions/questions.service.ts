@@ -15,6 +15,7 @@ import { UpdateQuestionDto } from './dto/update-question.dto';
 import { QueryQuestionDto } from './dto/query-question.dto';
 import { PaginatedResult } from '../common/types/pagination';
 import { ImportResultDto } from './dto/import-result.dto';
+import { CreateQuestionBankDto } from '../question-banks/dto/create-question-bank.dto';
 import {
   serializeTranslations,
   localizeQuestion,
@@ -272,8 +273,52 @@ export class QuestionsService {
     if (role !== Role.super_admin && role !== Role.question_admin) {
       await this.bankPermission.requirePermission(userId, bankId, 'editor');
     }
+    return this.importExcelRows(this.prisma, bankId, file);
+  }
+
+  async createBankFromExcel(
+    file: Express.Multer.File,
+    dto: CreateQuestionBankDto,
+    userId: string,
+  ) {
+    const name = dto.name.trim();
+    if (!name) throw new BadRequestException('题库名称不能为空');
+    return this.prisma.$transaction(
+      async (tx) => {
+        const bank = await tx.questionBank.create({
+          data: {
+            name,
+            description: dto.description,
+            createdBy: userId,
+          },
+        });
+        const summary = await this.importExcelRows(tx, bank.id, file, true);
+        if (summary.failed > 0 || summary.success === 0) {
+          const errors = summary.errors.map(
+            (error) => `第 ${error.row} 行: ${error.message}`,
+          );
+          throw new BadRequestException(
+            errors.length > 0 ? errors : 'Excel 无有效数据行',
+          );
+        }
+        return { bankId: bank.id, summary };
+      },
+      { timeout: 30000 },
+    );
+  }
+
+  private async importExcelRows(
+    prisma: Prisma.TransactionClient,
+    bankId: string,
+    file: Express.Multer.File,
+    createCategories = false,
+  ): Promise<ImportResultDto> {
     const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(new Uint8Array(file.buffer).buffer);
+    try {
+      await workbook.xlsx.load(new Uint8Array(file.buffer).buffer);
+    } catch {
+      throw new BadRequestException('Excel 文件无效, 请上传 .xlsx 文件');
+    }
     const sheet = workbook.worksheets[0];
 
     if (!sheet || sheet.rowCount < 2) {
@@ -285,12 +330,13 @@ export class QuestionsService {
       };
     }
 
-    const categories = await this.prisma.category.findMany({
+    const categories = await prisma.category.findMany({
       where: { bankId },
     });
     const categoryNameMap = new Map(categories.map((c) => [c.name, c.id]));
 
     const errors: { row: number; message: string }[] = [];
+    const questionsToCreate: Prisma.QuestionCreateManyInput[] = [];
     let success = 0;
 
     for (let rowNum = 2; rowNum <= sheet.rowCount; rowNum++) {
@@ -352,7 +398,7 @@ export class QuestionsService {
       let categoryId: string | undefined;
       if (categoryName) {
         categoryId = categoryNameMap.get(categoryName);
-        if (!categoryId) {
+        if (!categoryId && !createCategories) {
           errors.push({ row: rowNum, message: `分类不存在: ${categoryName}` });
           continue;
         }
@@ -371,22 +417,32 @@ export class QuestionsService {
       }
 
       try {
-        await this.prisma.question.create({
-          data: {
-            title,
-            type,
-            options,
-            answer,
-            analysis: analysis || undefined,
-            difficulty,
-            score,
-            categoryId,
-            locale,
-            translations,
-            bankId,
-          },
-        });
-        success++;
+        if (categoryName && !categoryId) {
+          const category = await prisma.category.create({
+            data: { name: categoryName, bankId },
+          });
+          categoryId = category.id;
+          categoryNameMap.set(categoryName, categoryId);
+        }
+        const data: Prisma.QuestionCreateManyInput = {
+          title,
+          type,
+          options,
+          answer,
+          analysis: analysis || undefined,
+          difficulty,
+          score,
+          categoryId,
+          locale,
+          translations,
+          bankId,
+        };
+        if (createCategories) {
+          questionsToCreate.push(data);
+        } else {
+          await prisma.question.create({ data });
+          success++;
+        }
       } catch (error) {
         errors.push({
           row: rowNum,
@@ -395,6 +451,12 @@ export class QuestionsService {
       }
     }
 
+    if (questionsToCreate.length > 0 && errors.length === 0) {
+      const result = await prisma.question.createMany({
+        data: questionsToCreate,
+      });
+      success = result.count;
+    }
     const total = sheet.rowCount - 1;
     return { total, success, failed: errors.length, errors };
   }
