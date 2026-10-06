@@ -102,7 +102,7 @@ export class QuestionsController {
     },
   })
   @UseInterceptors(
-    FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024 } }),
+    FileInterceptor('file', { limits: { fileSize: 100 * 1024 * 1024 } }),
   )
   importExcel(
     @Query('bankId') bankId: string,
@@ -123,7 +123,7 @@ export class QuestionsController {
   @ApiOperation({ summary: '从 Excel 创建题库并导入题目' })
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(
-    FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024 } }),
+    FileInterceptor('file', { limits: { fileSize: 100 * 1024 * 1024 } }),
   )
   createBankFromExcel(
     @UploadedFile() file: Express.Multer.File,
