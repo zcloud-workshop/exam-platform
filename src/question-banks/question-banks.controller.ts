@@ -14,7 +14,10 @@ import { CreateQuestionBankDto } from './dto/create-question-bank.dto';
 import { UpdateQuestionBankDto } from './dto/update-question-bank.dto';
 import { QueryQuestionBankDto } from './dto/query-question-bank.dto';
 import { CreateShareDto } from './dto/create-share.dto';
-import { ImportBankArchiveDto } from './dto/bank-archive.dto';
+import {
+  CreateBankArchiveDto,
+  ImportBankArchiveDto,
+} from './dto/bank-archive.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Role } from '@prisma/client';
@@ -66,6 +69,15 @@ export class QuestionBanksController {
   }
 
   // --- 归档导出/导入端点 ---
+
+  @Post('import')
+  @Roles(Role.super_admin, Role.question_admin, Role.teacher)
+  createFromArchive(
+    @Body() dto: CreateBankArchiveDto,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.archiveService.createFromArchive(dto.archive, userId, dto.name);
+  }
 
   /** 导出整个题库为 JSON 归档 (分类树 + 完整题目), 用于独立备份/迁移 */
   @Get(':id/export')
