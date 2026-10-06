@@ -93,6 +93,7 @@ Cookie 路径为 `/api`, 始终 `HttpOnly`; 生产环境使用 `Secure` 和 `Sam
 | PATCH  | `/question-banks/:id`                 | 管理角色 + O           | Body: `name?`, `description?`, `isPublic?`, `createdBy?` | 更新后的题库, 含 `creator` 和 `_count`                       |
 | DELETE | `/question-banks/:id`                 | 管理角色 + O           | 无                                                   | 已删除题库                                                   |
 | GET    | `/question-banks/:id/export`          | 管理角色 + V           | 无                                                   | `{ meta, categories, questions }`                            |
+| POST   | `/question-banks/import`             | 管理角色               | Body: `archive`, `name?`                            | `{ bankId, summary }`, summary 为归档导入摘要                 |
 | POST   | `/question-banks/:id/import`          | 管理角色 + E           | Body: `archive`, `mode?`                             | `{ categoriesImported, questionsImported, skipped, errors }` |
 | POST   | `/question-banks/:id/shares`          | 管理角色 + O           | Body: `userId`, `role`                               | 创建或更新后的分享, 含 `user`                                |
 | GET    | `/question-banks/:id/shares`          | 管理角色 + O           | 无                                                   | 分享数组, 含 `user`                                          |
@@ -114,7 +115,9 @@ Cookie 路径为 `/api`, 始终 `HttpOnly`; 生产环境使用 `Secure` 和 `Sam
 
 归档中的 `options` 和 `translations` 保留 JSON 字符串. `mode` 为 `skip` (默认), `merge` 或 `overwrite`. `skip` 和 `merge` 按目标已有分类名称, 题目 `title+type` 跳过重复内容; `overwrite` 先清空目标题库的题目和分类, 有试卷引用或题目图片时拒绝. 整次导入在一个事务内完成, 新记录生成新 ID.
 
-当前归档只迁移分类和题目, 不包括试卷, 考试, 记录, 分享, 文件或题库配置. 导入服务不使用 `meta` 做版本分派或改写目标元信息. ID 映射仅包含本次新建分类, 因重名而跳过的分类不会映射到目标已有分类; 关联这些分类的题目或子分类会得到空分类/父分类关联.
+归档只迁移分类和题目, 不包括试卷, 考试, 记录, 分享或文件. 导入已有题库不改写目标元信息. 跳过同名分类时会将源分类 ID 映射到已有分类 ID, 保留新题目和子分类关联.
+
+`POST /question-banks/import` 根据归档创建新题库, 名称使用 `name` 或 `meta.name`, 描述使用 `meta.description`, 所有者为当前用户, 默认不公开. 仅支持归档版本 `1`. 创建题库与导入分类、题目处于同一事务, 失败会回滚. 题库 JSON 请求上限为 11 MB, 前端文件限制为 10 MB.
 
 ## 分类
 
@@ -140,6 +143,7 @@ Cookie 路径为 `/api`, 始终 `HttpOnly`; 生产环境使用 `Secure` 和 `Sam
 | GET    | `/questions`                     | 登录, 按可访问题库过滤 | Query: `page?`, `pageSize?`, `bankId?`, `type?`, `categoryId?`, `difficulty?`, `keyword?`, `locale?` | 分页题目, 含 `category`                                  |
 | GET    | `/questions/export`              | 管理角色 + V           | Query: `bankId`, `categoryId?`                                                                       | Excel 文件 `questions.xlsx`                              |
 | POST   | `/questions/import`              | 管理角色 + E           | Query: `bankId`; multipart 字段 `file`                                                               | `{ total, success, failed, errors: [{ row, message }] }` |
+| POST   | `/questions/import/new-bank`     | 管理角色               | multipart: `file`, `name`, `description?`                                                           | `{ bankId, summary }`, summary 为 Excel 导入摘要        |
 | GET    | `/questions/:id`                 | 登录 + V               | Query: `locale?`                                                                                     | 题目, 含 `category`                                      |
 | PATCH  | `/questions/:id`                 | 管理角色 + E           | Body: 下述更新字段                                                                                   | 更新后的题目, 含 `category`                              |
 | DELETE | `/questions/:id`                 | 管理角色 + E           | 无                                                                                                   | 已删除题目                                               |
@@ -150,7 +154,9 @@ Cookie 路径为 `/api`, 始终 `HttpOnly`; 生产环境使用 `Secure` 和 `Sam
 
 `translations` 按语言代码保存 `title, options?, answer?, analysis?`. 更新时整体替换该字段. GET 支持按 `locale` 覆盖已翻译的内容, 缺失翻译回退到主内容. `locale` 字段本身仍表示题目主语言. 创建会验证分类属于同一题库; 更新目前未重新验证这一条件. 题目被试卷引用时不能删除.
 
-Excel 接口使用导出文件的列顺序: 标题, 题型, 选项, 答案, 解析, 难度, 分值, 分类, 主语言, 翻译. 题型使用中文名称, 分类使用目标题库内已有分类名称. 导入只处理首个工作表, 标题, 题型, 答案必填, 选项和翻译列为 JSON 文本. 文件限制 10 MiB, MIME 接受 XLSX 和 Excel 类型, 实际读取器为 XLSX. 每行独立写入, 允许部分成功; `total` 是表格数据行数, 空行跳过后可能不等于 `success+failed`. `bankId` 与分类列表一样没有查询 DTO 必填校验, 调用时必须显式提供.
+Excel 接口使用导出文件的列顺序: 标题, 题型, 选项, 答案, 解析, 难度, 分值, 分类, 主语言, 翻译. 题型使用中文名称. 导入只处理首个工作表, 标题, 题型, 答案必填, 选项和翻译列为 JSON 文本. 文件限制 10 MiB, MIME 接受 XLSX 和 Excel 类型, 实际读取器为 XLSX. 导入已有题库时分类必须已存在, 每行独立写入, 允许部分成功; `total` 是表格数据行数, 空行跳过后可能不等于 `success+failed`. `bankId` 与分类列表一样没有查询 DTO 必填校验, 调用时必须显式提供.
+
+`POST /questions/import/new-bank` 创建归属当前用户且不公开的题库, 按分类名称自动创建平级分类, 保留双语题目. 创建与批量导入处于同一事务, 无有效题目或任一行出错时返回 400 并回滚. Excel 不包含分类树层级.
 
 ### 题目图片
 
