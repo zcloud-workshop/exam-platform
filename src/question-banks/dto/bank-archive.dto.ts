@@ -1,5 +1,6 @@
 import {
   IsArray,
+  IsDefined,
   IsEnum,
   IsNumber,
   IsObject,
@@ -60,6 +61,7 @@ export class ArchiveQuestionDto {
 
 /** 完整归档结构: GET /question-banks/:id/export 的响应体 */
 export class BankArchiveDto {
+  @IsDefined()
   @ValidateNested()
   @Type(() => BankArchiveMetaDto)
   meta!: BankArchiveMetaDto;
@@ -75,8 +77,21 @@ export class BankArchiveDto {
   questions!: ArchiveQuestionDto[];
 }
 
+/** POST /question-banks/import 的请求体 */
+export class CreateBankArchiveDto {
+  @IsDefined()
+  @ValidateNested()
+  @Type(() => BankArchiveDto)
+  archive!: BankArchiveDto;
+
+  @IsOptional()
+  @IsString()
+  name?: string;
+}
+
 /** POST /question-banks/:id/import 的请求体 */
 export class ImportBankArchiveDto {
+  @IsDefined()
   @ValidateNested()
   @Type(() => BankArchiveDto)
   archive!: BankArchiveDto;
