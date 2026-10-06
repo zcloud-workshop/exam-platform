@@ -8,7 +8,7 @@ import { json } from 'express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  app.use('/api/question-banks', json({ limit: '11mb' }));
+  app.use('/api/question-banks', json({ limit: '101mb' }));
   app.use(json());
 
   // 全局路由前缀, 所有接口变为 /api/xxx
