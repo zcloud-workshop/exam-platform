@@ -1,0 +1,267 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  super_admin
+  question_admin
+  teacher
+  student
+}
+
+enum QuestionType {
+  single
+  multiple
+  true_false
+  fill
+  short
+  program
+}
+
+enum RecordStatus {
+  draft
+  submitted
+}
+
+enum BankShareRole {
+  viewer
+  editor
+  exam_manager
+}
+
+model RegistrationInvite {
+  id        String   @id @default(uuid())
+  code      String   @unique
+  role      Role
+  createdAt DateTime @default(now())
+  usedAt    DateTime?
+
+  @@map("registration_invites")
+}
+
+model User {
+  id            String         @id @default(uuid())
+  username      String         @unique
+  password      String
+  role          Role           @default(student)
+  createdAt     DateTime       @default(now())
+  records       Record[]
+  examParticipants ExamParticipant[]
+  questionBanks QuestionBank[]
+  bankShares    BankShare[]
+  practiceQuestions UserPracticeQuestion[]
+  practiceAttempts PracticeAttempt[]
+}
+
+model QuestionBank {
+  id          String     @id @default(uuid())
+  name        String
+  description String?
+  isPublic    Boolean    @default(false)
+  createdAt   DateTime   @default(now())
+  createdBy   String
+  creator     User       @relation(fields: [createdBy], references: [id])
+  categories  Category[]
+  questions   Question[]
+  papers      Paper[]
+  shares      BankShare[]
+
+  @@map("question_banks")
+}
+
+model Category {
+  id        String        @id @default(uuid())
+  name      String
+  parentId  String?
+  parent    Category?     @relation("CategoryTree", fields: [parentId], references: [id])
+  children  Category[]    @relation("CategoryTree")
+  bankId    String
+  bank      QuestionBank  @relation(fields: [bankId], references: [id])
+  questions Question[]
+
+  @@map("categories")
+}
+
+model Question {
+  id           String        @id @default(uuid())
+  title        String
+  type         QuestionType
+  options      String?
+  answer       String
+  analysis     String?
+  difficulty   Int           @default(1)
+  score        Int           @default(1)
+  categoryId   String?
+  locale       String        @default("zh")
+  translations String?
+  bankId       String
+  bank         QuestionBank  @relation(fields: [bankId], references: [id])
+  category     Category?     @relation(fields: [categoryId], references: [id])
+  papers       PaperQuestion[]
+  images       File[]
+  practiceQuestions UserPracticeQuestion[]
+  practiceAttempts PracticeAttempt[]
+
+  @@map("questions")
+}
+
+model Paper {
+  id         String         @id @default(uuid())
+  name       String
+  duration   Int
+  totalScore Int
+  createdAt  DateTime       @default(now())
+  bankId     String
+  bank       QuestionBank   @relation(fields: [bankId], references: [id])
+  questions  PaperQuestion[]
+  exams      Exam[]
+
+  @@map("papers")
+}
+
+model PaperQuestion {
+  paperId    String
+  questionId String
+  sortOrder  Int @default(0)
+
+  paper    Paper    @relation(fields: [paperId], references: [id])
+  question Question @relation(fields: [questionId], references: [id])
+
+  @@id([paperId, questionId])
+  @@map("paper_questions")
+}
+
+model Exam {
+  id        String   @id @default(uuid())
+  paperId   String
+  name      String
+  startTime DateTime
+  endTime   DateTime
+  showScore Boolean @default(false)
+  createdAt DateTime @default(now())
+
+  paper   Paper    @relation(fields: [paperId], references: [id])
+  records Record[]
+  participants ExamParticipant[]
+
+  @@map("exams")
+}
+
+model ExamParticipant {
+  examId    String
+  userId    String
+  assignedAt DateTime @default(now())
+
+  exam Exam @relation(fields: [examId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+
+  @@id([examId, userId])
+  @@map("exam_participants")
+}
+
+model Record {
+  id          String       @id @default(uuid())
+  examId      String
+  userId      String
+  status      RecordStatus @default(draft)
+  score       Int?
+  answers     String       @default("{}")
+  submittedAt DateTime?
+  createdAt   DateTime     @default(now())
+
+  exam Exam @relation(fields: [examId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([examId, userId])
+  @@map("records")
+}
+
+model OperationLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  username   String?
+  action     String
+  resource   String?
+  resourceId String?
+  method     String
+  path       String
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@map("operation_logs")
+}
+
+model File {
+  id           String   @id @default(uuid())
+  originalName String
+  mimeType     String
+  size         Int
+  s3Key        String   @unique
+  url          String?
+  uploadedBy   String?
+  questionId   String?
+  optionKey    String?
+  question     Question? @relation(fields: [questionId], references: [id], onDelete: Restrict)
+  createdAt    DateTime @default(now())
+
+  @@index([questionId])
+  @@map("files")
+}
+
+model BankShare {
+  id        String        @id @default(uuid())
+  bankId    String
+  userId    String
+  role      BankShareRole
+  createdAt DateTime      @default(now())
+
+  bank QuestionBank @relation(fields: [bankId], references: [id])
+  user User         @relation(fields: [userId], references: [id])
+
+  @@unique([bankId, userId])
+  @@map("bank_shares")
+}
+
+model UserPracticeQuestion {
+  userId        String
+  questionId    String
+  isFavorite    Boolean  @default(false)
+  isWrong       Boolean  @default(false)
+  attemptCount  Int      @default(0)
+  wrongCount    Int      @default(0)
+  lastAttemptAt DateTime?
+  favoritedAt   DateTime?
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@id([userId, questionId])
+  @@index([userId, isWrong, lastAttemptAt])
+  @@index([userId, isFavorite, favoritedAt])
+  @@index([questionId])
+  @@map("user_practice_questions")
+}
+
+model PracticeAttempt {
+  id         String   @id @default(uuid())
+  userId     String
+  questionId String
+  userAnswer String
+  correct    Boolean?
+  answer     String
+  analysis   String?
+  createdAt  DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([questionId])
+  @@map("practice_attempts")
+}

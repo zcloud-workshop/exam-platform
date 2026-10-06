@@ -1,0 +1,10 @@
+# pnpm 11 build 审批配置: 显式声明哪些依赖允许执行 postinstall/install 脚本。
+# https://pnpm.io/settings#allowbuilds
+allowBuilds:
+  '@prisma/client': true       # 下载并生成 Prisma 查询引擎二进制 (必需)
+  '@prisma/engines': true      # Prisma 引擎二进制 (必需)
+  prisma: true                 # Prisma CLI 引擎 (必需)
+  '@nestjs/core': true         # NestJS platform 检测 (必需)
+  esbuild: true                # nest build 底层打包器 (必需)
+  unrs-resolver: true          # eslint typescript 解析器依赖 (必需)
+  '@scarf/scarf': false        # 纯遥测包, 无功能价值, 关闭
