@@ -9,27 +9,27 @@ import { BankPermissionService } from '../common/services/bank-permission.servic
 import { Prisma, Role } from '@prisma/client';
 import {
   ArchiveCategoryDto,
-  ArchiveQuestionDto,
   ArchiveImportMode,
-  BankArchiveMetaDto,
   BankArchiveDto,
   ImportSummaryDto,
 } from './dto/bank-archive.dto';
 import { BANK_ARCHIVE_VERSION } from './dto/bank-archive.dto';
+import { QuestionImageArchiveService } from '../files/question-image-archive.service';
 
 /**
  * 题库归档服务: 提供整库逻辑导出/导入能力。
  *
  * 设计目标: 实现「按题库独立备份/导出/迁移」—— 不依赖物理 schema 隔离,
- * 输出标准 JSON 归档(含分类树 + 完整题目),跨数据库通用。
+ * 输出标准 JSON 归档(含分类树 + 完整题目 + 附图), 跨数据库通用.
  *
- * 归档结构自描述: { meta, categories[], questions[] }, 题目/分类保留原 id 便于精确重建。
+ * 归档结构自描述: { meta, categories[], questions[], images[] }, 保留源 id 以重建关联.
  */
 @Injectable()
 export class BankArchiveService {
   constructor(
     private prisma: PrismaService,
     private bankPermission: BankPermissionService,
+    private imageArchive: QuestionImageArchiveService,
   ) {}
 
   /**
@@ -40,11 +40,7 @@ export class BankArchiveService {
     bankId: string,
     userId: string,
     role: string,
-  ): Promise<{
-    meta: BankArchiveMetaDto;
-    categories: ArchiveCategoryDto[];
-    questions: ArchiveQuestionDto[];
-  }> {
+  ): Promise<BankArchiveDto> {
     if (role !== Role.super_admin && role !== Role.question_admin) {
       await this.bankPermission.requirePermission(userId, bankId, 'viewer');
     }
@@ -78,6 +74,9 @@ export class BankArchiveService {
 
     if (!bank) throw new NotFoundException('题库不存在');
 
+    const images = await this.imageArchive.export(
+      questions.map((question) => question.id),
+    );
     return {
       meta: {
         id: bank.id,
@@ -88,6 +87,7 @@ export class BankArchiveService {
       },
       categories,
       questions,
+      images,
     };
   }
 
@@ -108,10 +108,7 @@ export class BankArchiveService {
    */
   async import(
     bankId: string,
-    archive: {
-      categories: ArchiveCategoryDto[];
-      questions: ArchiveQuestionDto[];
-    },
+    archive: BankArchiveDto,
     mode: ArchiveImportMode | undefined,
     userId: string,
     role: string,
@@ -125,8 +122,21 @@ export class BankArchiveService {
     });
     if (!bank) throw new NotFoundException('题库不存在');
 
-    return this.prisma.$transaction((tx) =>
-      this.importIntoBank(tx, bankId, archive, mode ?? ArchiveImportMode.skip),
+    this.validateArchive(archive);
+    return this.imageArchive.withStorageRollback((uploadedKeys, removedKeys) =>
+      this.prisma.$transaction(
+        (tx) =>
+          this.importIntoBank(
+            tx,
+            bankId,
+            archive,
+            mode ?? ArchiveImportMode.skip,
+            userId,
+            uploadedKeys,
+            removedKeys,
+          ),
+        { timeout: 120000 },
+      ),
     );
   }
 
@@ -135,39 +145,74 @@ export class BankArchiveService {
     userId: string,
     name?: string,
   ) {
-    if (archive.meta.version !== BANK_ARCHIVE_VERSION) {
-      throw new BadRequestException('不支持的归档版本');
-    }
+    this.validateArchive(archive);
     const bankName = (name ?? archive.meta.name).trim();
     if (!bankName) throw new BadRequestException('题库名称不能为空');
 
-    return this.prisma.$transaction(async (tx) => {
-      const bank = await tx.questionBank.create({
-        data: {
-          name: bankName,
-          description: archive.meta.description,
-          createdBy: userId,
+    return this.imageArchive.withStorageRollback((uploadedKeys, removedKeys) =>
+      this.prisma.$transaction(
+        async (tx) => {
+          const bank = await tx.questionBank.create({
+            data: {
+              name: bankName,
+              description: archive.meta.description,
+              createdBy: userId,
+            },
+          });
+          const summary = await this.importIntoBank(
+            tx,
+            bank.id,
+            archive,
+            ArchiveImportMode.skip,
+            userId,
+            uploadedKeys,
+            removedKeys,
+          );
+          return { bankId: bank.id, summary };
         },
-      });
-      const summary = await this.importIntoBank(
-        tx,
-        bank.id,
-        archive,
-        ArchiveImportMode.skip,
-      );
-      return { bankId: bank.id, summary };
-    });
+        { timeout: 120000 },
+      ),
+    );
+  }
+
+  private validateArchive(archive: BankArchiveDto) {
+    if (![1, BANK_ARCHIVE_VERSION].includes(archive.meta.version)) {
+      throw new BadRequestException('不支持的归档版本');
+    }
+    if (archive.meta.version === 2 && !Array.isArray(archive.images)) {
+      throw new BadRequestException('归档缺少图片数据');
+    }
+    if (
+      archive.images?.length &&
+      new Set(archive.questions.map((question) => question.id)).size !==
+        archive.questions.length
+    ) {
+      throw new BadRequestException('图片归档的题目 ID 不能重复');
+    }
+    this.imageArchive.validate(
+      archive.images ?? [],
+      new Map(
+        archive.questions.map((question) => [
+          question.id,
+          { options: question.options ?? null },
+        ]),
+      ),
+    );
   }
 
   private async importIntoBank(
     tx: Prisma.TransactionClient,
     bankId: string,
-    archive: Pick<BankArchiveDto, 'categories' | 'questions'>,
+    archive: BankArchiveDto,
     importMode: ArchiveImportMode,
+    userId: string,
+    uploadedKeys: string[],
+    removedKeys: string[],
   ): Promise<ImportSummaryDto> {
     const summary: ImportSummaryDto = {
       categoriesImported: 0,
       questionsImported: 0,
+      imagesImported: 0,
       skipped: 0,
       errors: [],
     };
@@ -185,11 +230,17 @@ export class BankArchiveService {
       const imageCount = await tx.file.count({
         where: { question: { bankId } },
       });
-      if (imageCount > 0) {
+      if (imageCount > 0 && archive.meta.version === 1) {
         throw new BadRequestException(
           '目标题库包含题目图片, 归档不含图片; 请先删除图片再覆盖导入',
         );
       }
+      const oldImages = await tx.file.findMany({
+        where: { question: { bankId } },
+        select: { s3Key: true },
+      });
+      removedKeys.push(...oldImages.map((image) => image.s3Key));
+      await tx.file.deleteMany({ where: { question: { bankId } } });
       await tx.question.deleteMany({ where: { bankId } });
       await tx.category.deleteMany({ where: { bankId } });
     }
@@ -247,6 +298,10 @@ export class BankArchiveService {
     }
 
     // 导入题目: 内存过滤后预生成 id, createMany 批量插入(categoryId 经映射重写)
+    const questionIdMap = new Map<
+      string,
+      { id: string; options: string | null }
+    >();
     const questionsToCreate = archive.questions
       .filter((q) => {
         if (
@@ -258,27 +313,39 @@ export class BankArchiveService {
         }
         return true;
       })
-      .map((q) => ({
-        id: randomUUID(),
-        title: q.title,
-        type: q.type,
-        options: q.options ?? null,
-        answer: q.answer,
-        analysis: q.analysis ?? null,
-        difficulty: q.difficulty,
-        score: q.score,
-        categoryId: q.categoryId
-          ? (categoryIdMap.get(q.categoryId) ?? null)
-          : null,
-        locale: q.locale ?? 'zh',
-        translations: q.translations ?? null,
-        bankId,
-      }));
+      .map((q) => {
+        const id = randomUUID();
+        questionIdMap.set(q.id, { id, options: q.options ?? null });
+        return {
+          id,
+          title: q.title,
+          type: q.type,
+          options: q.options ?? null,
+          answer: q.answer,
+          analysis: q.analysis ?? null,
+          difficulty: q.difficulty,
+          score: q.score,
+          categoryId: q.categoryId
+            ? (categoryIdMap.get(q.categoryId) ?? null)
+            : null,
+          locale: q.locale ?? 'zh',
+          translations: q.translations ?? null,
+          bankId,
+        };
+      });
     if (questionsToCreate.length > 0) {
       await tx.question.createMany({ data: questionsToCreate });
       summary.questionsImported = questionsToCreate.length;
     }
 
+    summary.imagesImported = await this.imageArchive.restore(
+      tx,
+      archive.images ?? [],
+      questionIdMap,
+      bankId,
+      userId,
+      uploadedKeys,
+    );
     return summary;
   }
 }
