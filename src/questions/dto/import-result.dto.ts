@@ -9,6 +9,9 @@ export class ImportError {
 }
 
 export class ImportResultDto {
+  @ApiProperty({ description: '导入图片数', required: false })
+  imagesImported?: number;
+
   @ApiProperty({ description: '总行数' })
   total!: number;
 
