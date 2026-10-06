@@ -6,6 +6,7 @@
 | ------------------------------------------------ | ------------------------------------------- |
 | 安装, 配置, 启动, 构建和测试                     | [开发与运行](getting-started.md)            |
 | 使用 Docker Compose 部署, 配置环境变量和更新容器 | [Docker Compose 部署](docker-deployment.md) |
+| 部署 RustFS 1, PostgreSQL 18 和数据库自签证书    | [中间件部署](middleware-deployment.md)      |
 | 理解系统组成, 请求处理和模块关系                 | [系统架构](architecture.md)                 |
 | 理解权限, 出题, 组卷, 考试和练习                 | [业务逻辑](business-logic.md)               |
 | 查找接口与入参                                   | [接口参考](api.md)                          |
