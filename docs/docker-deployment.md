@@ -2,7 +2,7 @@
 
 [返回文档导航](README.md)
 
-从仓库根目录执行命令. [compose.yaml](../compose.yaml) 使用已有 [Dockerfile](../Dockerfile) 构建并运行后端, 连接已有 PostgreSQL 和 S3 兼容对象存储. 数据库和对象存储需单独准备; 本仓库不包含前端.
+从仓库根目录执行命令. [compose.yaml](../compose.yaml) 使用已有 [Dockerfile](../Dockerfile) 构建并运行后端, 连接已有 PostgreSQL 和 S3 兼容对象存储. 数据库和对象存储需单独准备, RustFS 1, PostgreSQL 18 及数据库自签证书的配置见 [中间件部署](middleware-deployment.md); 本仓库不包含前端.
 
 ## 部署前准备
 
