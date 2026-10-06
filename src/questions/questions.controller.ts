@@ -27,6 +27,7 @@ import { QuestionImagesService } from '../files/question-images.service';
 import { CreateQuestionDto } from './dto/create-question.dto';
 import { UpdateQuestionDto } from './dto/update-question.dto';
 import { QueryQuestionDto } from './dto/query-question.dto';
+import { CreateQuestionBankDto } from '../question-banks/dto/create-question-bank.dto';
 import { UploadQuestionImageDto } from './dto/upload-question-image.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -109,6 +110,34 @@ export class QuestionsController {
     @CurrentUser('id') userId: string,
     @CurrentUser('role') role: string,
   ) {
+    return this.questionsService.importFromExcel(
+      bankId,
+      this.requireExcelFile(file),
+      userId,
+      role,
+    );
+  }
+
+  @Post('import/new-bank')
+  @Roles(Role.super_admin, Role.question_admin, Role.teacher)
+  @ApiOperation({ summary: '从 Excel 创建题库并导入题目' })
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024 } }),
+  )
+  createBankFromExcel(
+    @UploadedFile() file: Express.Multer.File,
+    @Body() dto: CreateQuestionBankDto,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.questionsService.createBankFromExcel(
+      this.requireExcelFile(file),
+      dto,
+      userId,
+    );
+  }
+
+  private requireExcelFile(file: Express.Multer.File | undefined) {
     if (!file) throw new BadRequestException('请上传文件');
     const allowedMimeTypes = [
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -117,7 +146,7 @@ export class QuestionsController {
     if (!allowedMimeTypes.includes(file.mimetype)) {
       throw new BadRequestException(`不支持的文件类型: ${file.mimetype}`);
     }
-    return this.questionsService.importFromExcel(bankId, file, userId, role);
+    return file;
   }
 
   @Post(':id/images')
