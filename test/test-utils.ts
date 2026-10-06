@@ -117,7 +117,7 @@ export async function createTestApp(): Promise<TestContext> {
     .compile();
 
   const app = moduleFixture.createNestApplication<INestApplication<Server>>();
-  app.use('/api/question-banks', json({ limit: '11mb' }));
+  app.use('/api/question-banks', json({ limit: '101mb' }));
   app.use(json());
   app.setGlobalPrefix('api');
   app.useGlobalPipes(
