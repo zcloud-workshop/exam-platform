@@ -6,12 +6,13 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { BankPermissionService } from '../common/services/bank-permission.service';
-import { Role } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 import {
   ArchiveCategoryDto,
   ArchiveQuestionDto,
   ArchiveImportMode,
   BankArchiveMetaDto,
+  BankArchiveDto,
   ImportSummaryDto,
 } from './dto/bank-archive.dto';
 import { BANK_ARCHIVE_VERSION } from './dto/bank-archive.dto';
@@ -124,7 +125,46 @@ export class BankArchiveService {
     });
     if (!bank) throw new NotFoundException('题库不存在');
 
-    const importMode = mode ?? ArchiveImportMode.skip;
+    return this.prisma.$transaction((tx) =>
+      this.importIntoBank(tx, bankId, archive, mode ?? ArchiveImportMode.skip),
+    );
+  }
+
+  async createFromArchive(
+    archive: BankArchiveDto,
+    userId: string,
+    name?: string,
+  ) {
+    if (archive.meta.version !== BANK_ARCHIVE_VERSION) {
+      throw new BadRequestException('不支持的归档版本');
+    }
+    const bankName = (name ?? archive.meta.name).trim();
+    if (!bankName) throw new BadRequestException('题库名称不能为空');
+
+    return this.prisma.$transaction(async (tx) => {
+      const bank = await tx.questionBank.create({
+        data: {
+          name: bankName,
+          description: archive.meta.description,
+          createdBy: userId,
+        },
+      });
+      const summary = await this.importIntoBank(
+        tx,
+        bank.id,
+        archive,
+        ArchiveImportMode.skip,
+      );
+      return { bankId: bank.id, summary };
+    });
+  }
+
+  private async importIntoBank(
+    tx: Prisma.TransactionClient,
+    bankId: string,
+    archive: Pick<BankArchiveDto, 'categories' | 'questions'>,
+    importMode: ArchiveImportMode,
+  ): Promise<ImportSummaryDto> {
     const summary: ImportSummaryDto = {
       categoriesImported: 0,
       questionsImported: 0,
@@ -132,113 +172,112 @@ export class BankArchiveService {
       errors: [],
     };
 
-    await this.prisma.$transaction(async (tx) => {
-      // overwrite 模式: 先清空目标库现有分类和题目, 但若题目被试卷引用则拒绝
-      if (importMode === ArchiveImportMode.overwrite) {
-        const referencedCount = await tx.paperQuestion.count({
-          where: { question: { bankId } },
-        });
-        if (referencedCount > 0) {
-          throw new BadRequestException(
-            `目标题库有 ${referencedCount} 道题目被试卷引用, 无法清空; 请改用 skip/merge 模式`,
-          );
-        }
-        const imageCount = await tx.file.count({
-          where: { question: { bankId } },
-        });
-        if (imageCount > 0) {
-          throw new BadRequestException(
-            '目标题库包含题目图片, 归档不含图片; 请先删除图片再覆盖导入',
-          );
-        }
-        await tx.question.deleteMany({ where: { bankId } });
-        await tx.category.deleteMany({ where: { bankId } });
+    // overwrite 模式: 先清空目标库现有分类和题目, 但若题目被试卷引用则拒绝
+    if (importMode === ArchiveImportMode.overwrite) {
+      const referencedCount = await tx.paperQuestion.count({
+        where: { question: { bankId } },
+      });
+      if (referencedCount > 0) {
+        throw new BadRequestException(
+          `目标题库有 ${referencedCount} 道题目被试卷引用, 无法清空; 请改用 skip/merge 模式`,
+        );
       }
-
-      // skip/merge 模式下用于去重的目标库现有记录签名集合(用 name+bankId 近似判定"已存在等价记录");
-      // 因导入生成全新 id, 主键冲突已不可能, skip 语义改为: name 重复的分类 / title+type 重复的题目视为已存在。
-      const existingCategoryKeys = new Set(
-        (
-          await tx.category.findMany({
-            where: { bankId },
-            select: { name: true },
-          })
-        ).map((c) => c.name),
-      );
-      const existingQuestionKeys = new Set(
-        (
-          await tx.question.findMany({
-            where: { bankId },
-            select: { title: true, type: true },
-          })
-        ).map((q) => `${q.title}|${q.type}`),
-      );
-
-      // 导入分类: 先拓扑排序(父在前), 再内存过滤 + 预生成 UUID 建映射, 最后 createMany 批量插入。
-      // 拓扑排序保证 .map 阶段父分类先写入 categoryIdMap, 子分类查 parentId 时能命中。
-      const sortedCategories = topologicalSort(archive.categories);
-      const categoryIdMap = new Map<string, string>();
-      const categoriesToCreate = sortedCategories
-        .filter((cat) => {
-          if (
-            importMode !== ArchiveImportMode.overwrite &&
-            existingCategoryKeys.has(cat.name)
-          ) {
-            summary.skipped++;
-            return false;
-          }
-          return true;
-        })
-        .map((cat) => {
-          const newId = randomUUID();
-          categoryIdMap.set(cat.id, newId);
-          return {
-            id: newId,
-            name: cat.name,
-            parentId: cat.parentId
-              ? (categoryIdMap.get(cat.parentId) ?? null)
-              : null,
-            bankId,
-          };
-        });
-      if (categoriesToCreate.length > 0) {
-        await tx.category.createMany({ data: categoriesToCreate });
-        summary.categoriesImported = categoriesToCreate.length;
+      const imageCount = await tx.file.count({
+        where: { question: { bankId } },
+      });
+      if (imageCount > 0) {
+        throw new BadRequestException(
+          '目标题库包含题目图片, 归档不含图片; 请先删除图片再覆盖导入',
+        );
       }
+      await tx.question.deleteMany({ where: { bankId } });
+      await tx.category.deleteMany({ where: { bankId } });
+    }
 
-      // 导入题目: 内存过滤后预生成 id, createMany 批量插入(categoryId 经映射重写)
-      const questionsToCreate = archive.questions
-        .filter((q) => {
-          if (
-            importMode !== ArchiveImportMode.overwrite &&
-            existingQuestionKeys.has(`${q.title}|${q.type}`)
-          ) {
-            summary.skipped++;
-            return false;
-          }
-          return true;
+    // skip/merge 模式下用于去重的目标库现有记录签名集合(用 name+bankId 近似判定"已存在等价记录");
+    // 因导入生成全新 id, 主键冲突已不可能, skip 语义改为: name 重复的分类 / title+type 重复的题目视为已存在。
+    const existingCategoryIds = new Map(
+      (
+        await tx.category.findMany({
+          where: { bankId },
+          select: { id: true, name: true },
         })
-        .map((q) => ({
-          id: randomUUID(),
-          title: q.title,
-          type: q.type,
-          options: q.options ?? null,
-          answer: q.answer,
-          analysis: q.analysis ?? null,
-          difficulty: q.difficulty,
-          score: q.score,
-          categoryId: q.categoryId
-            ? (categoryIdMap.get(q.categoryId) ?? null)
+      ).map((c) => [c.name, c.id]),
+    );
+    const existingQuestionKeys = new Set(
+      (
+        await tx.question.findMany({
+          where: { bankId },
+          select: { title: true, type: true },
+        })
+      ).map((q) => `${q.title}|${q.type}`),
+    );
+
+    // 导入分类: 先拓扑排序(父在前), 再内存过滤 + 预生成 UUID 建映射, 最后 createMany 批量插入。
+    // 拓扑排序保证 .map 阶段父分类先写入 categoryIdMap, 子分类查 parentId 时能命中。
+    const sortedCategories = topologicalSort(archive.categories);
+    const categoryIdMap = new Map<string, string>();
+    const categoriesToCreate = sortedCategories
+      .filter((cat) => {
+        if (
+          importMode !== ArchiveImportMode.overwrite &&
+          existingCategoryIds.has(cat.name)
+        ) {
+          categoryIdMap.set(cat.id, existingCategoryIds.get(cat.name)!);
+          summary.skipped++;
+          return false;
+        }
+        return true;
+      })
+      .map((cat) => {
+        const newId = randomUUID();
+        categoryIdMap.set(cat.id, newId);
+        return {
+          id: newId,
+          name: cat.name,
+          parentId: cat.parentId
+            ? (categoryIdMap.get(cat.parentId) ?? null)
             : null,
-          locale: q.locale ?? 'zh',
-          translations: q.translations ?? null,
           bankId,
-        }));
-      if (questionsToCreate.length > 0) {
-        await tx.question.createMany({ data: questionsToCreate });
-        summary.questionsImported = questionsToCreate.length;
-      }
-    });
+        };
+      });
+    if (categoriesToCreate.length > 0) {
+      await tx.category.createMany({ data: categoriesToCreate });
+      summary.categoriesImported = categoriesToCreate.length;
+    }
+
+    // 导入题目: 内存过滤后预生成 id, createMany 批量插入(categoryId 经映射重写)
+    const questionsToCreate = archive.questions
+      .filter((q) => {
+        if (
+          importMode !== ArchiveImportMode.overwrite &&
+          existingQuestionKeys.has(`${q.title}|${q.type}`)
+        ) {
+          summary.skipped++;
+          return false;
+        }
+        return true;
+      })
+      .map((q) => ({
+        id: randomUUID(),
+        title: q.title,
+        type: q.type,
+        options: q.options ?? null,
+        answer: q.answer,
+        analysis: q.analysis ?? null,
+        difficulty: q.difficulty,
+        score: q.score,
+        categoryId: q.categoryId
+          ? (categoryIdMap.get(q.categoryId) ?? null)
+          : null,
+        locale: q.locale ?? 'zh',
+        translations: q.translations ?? null,
+        bankId,
+      }));
+    if (questionsToCreate.length > 0) {
+      await tx.question.createMany({ data: questionsToCreate });
+      summary.questionsImported = questionsToCreate.length;
+    }
 
     return summary;
   }
