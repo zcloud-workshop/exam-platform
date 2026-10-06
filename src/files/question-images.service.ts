@@ -31,10 +31,32 @@ export class QuestionImagesService {
     optionKey?: string,
   ): Promise<QuestionImage> {
     const question = await this.requireEditor(questionId, userId, role);
-    if (optionKey !== undefined) {
+    if (!file) throw new BadRequestException('请上传图片');
+    const extension = this.validateImage(
+      file.buffer,
+      file.mimetype,
+      question.options,
+      optionKey,
+    );
+    const image = await this.files.upload(file, userId, {
+      id: question.id,
+      bankId: question.bankId,
+      extension,
+      optionKey,
+    });
+    return this.signImage(image);
+  }
+
+  validateImage(
+    buffer: Buffer,
+    mimeType: string,
+    questionOptions: string | null,
+    optionKey?: string | null,
+  ) {
+    if (optionKey !== undefined && optionKey !== null) {
       let options: unknown;
       try {
-        options = JSON.parse(question.options ?? 'null');
+        options = JSON.parse(questionOptions ?? 'null');
       } catch {
         throw new BadRequestException('题目选项格式无效');
       }
@@ -51,18 +73,10 @@ export class QuestionImagesService {
           Object.prototype.hasOwnProperty.call(options, optionKey);
       if (!exists) throw new BadRequestException(`选项 ${optionKey} 不存在`);
     }
-    if (!file) throw new BadRequestException('请上传图片');
-    if (file.buffer.length === 0 || file.buffer.length > 10 * 1024 * 1024) {
+    if (buffer.length === 0 || buffer.length > 10 * 1024 * 1024) {
       throw new BadRequestException('图片不能为空且不能超过 10 MiB');
     }
-    const extension = this.getImageExtension(file);
-    const image = await this.files.upload(file, userId, {
-      id: question.id,
-      bankId: question.bankId,
-      extension,
-      optionKey,
-    });
-    return this.signImage(image);
+    return this.getImageExtension({ buffer, mimetype: mimeType });
   }
 
   async remove(
@@ -168,7 +182,9 @@ export class QuestionImagesService {
     return question;
   }
 
-  private getImageExtension(file: Express.Multer.File) {
+  private getImageExtension(
+    file: Pick<Express.Multer.File, 'buffer' | 'mimetype'>,
+  ) {
     const buffer = file.buffer;
     switch (file.mimetype) {
       case 'image/png':
