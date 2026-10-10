@@ -39,6 +39,13 @@ export class UsersController {
     return this.usersService.findRegistrationInvites();
   }
 
+  @Delete('registration-invites/:id')
+  @Roles(Role.super_admin)
+  @ApiOperation({ summary: '删除注册邀请码' })
+  removeRegistrationInvite(@Param('id') id: string) {
+    return this.usersService.removeRegistrationInvite(id);
+  }
+
   @Post()
   @Roles(Role.super_admin)
   @ApiOperation({ summary: '创建用户' })
