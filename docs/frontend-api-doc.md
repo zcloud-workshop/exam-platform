@@ -19,6 +19,8 @@ JWT 与 Cookie 有效期均为 4 小时, 当前没有刷新 token 接口. API �
 
 注册先由超级管理员调用 `POST /users/registration-invites` 提交目标 `role`, 取得一次性 `code`; `GET /users/registration-invites` 可查看使用状态. 注册表单只向 `POST /auth/register` 提交 `username`, `password`, `inviteCode`, 确认密码由客户端校验且不发送, 不允许提交角色. 注册成功返回脱敏用户信息, 随后调用登录接口建立会话. 邀请码无效或已使用返回 `400`, 用户名已存在返回 `409`, 失败不会消耗邀请码.
 
+超级管理员可调用 `DELETE /users/registration-invites/:id` 删除未使用或已使用的邀请码, 成功返回 `{ data: { success: true } }`, 不存在或已删除返回 `404`. 前端应在用户确认后提交, 成功时移除列表记录, 失败时保留记录并显示接口错误. 删除后无法使用该码注册, 已注册账号不受影响.
+
 普通成功响应外层只有一层 `{ data: T }`. 分页列表中的 `T` 自身含 `data` 数组, 因此请求库解包后仍需读取分页结果的 `data, total, page, pageSize`. 用户, 分类, 分享和公开练题列表是数组, 不能一律按分页处理.
 
 错误响应没有成功包装, 格式为 `{ statusCode, message, timestamp }`; `message` 可能为数组. DTO 拒绝未声明字段, 更新表单应只提交该接口允许的字段, 不直接回传整个详情对象. 例如试卷更新不接收 `bankId`, 考试更新不接收 `paperId`, 题目更新不接收 `category`.
