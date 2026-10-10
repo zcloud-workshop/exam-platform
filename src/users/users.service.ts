@@ -40,6 +40,14 @@ export class UsersService {
     });
   }
 
+  async removeRegistrationInvite(id: string) {
+    const deleted = await this.prisma.registrationInvite.deleteMany({
+      where: { id },
+    });
+    if (deleted.count === 0) throw new NotFoundException('邀请码不存在');
+    return { success: true };
+  }
+
   /** 创建用户, 密码自动哈希存储 */
   async create(dto: CreateUserDto) {
     const hashedPassword = await bcrypt.hash(dto.password, SALT_ROUNDS);
