@@ -62,8 +62,9 @@ describe('Registration invitations (e2e)', () => {
   });
 
   it.each([Role.question_admin, Role.teacher, Role.student])(
-    '%s 无权生成或查看邀请码',
+    '%s 无权生成, 查看或删除邀请码',
     async (role) => {
+      const invite = await createInvite();
       const token = await createUser(ctx, adminToken, `denied_${role}`, role);
       await ctx
         .req()
@@ -76,16 +77,121 @@ describe('Registration invitations (e2e)', () => {
         .get('/api/users/registration-invites')
         .set('Authorization', `Bearer ${token}`)
         .expect(403);
+      await ctx
+        .req()
+        .delete(`/api/users/registration-invites/${invite.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(403);
+      expect(
+        await ctx.prisma.registrationInvite.findUnique({
+          where: { id: invite.id },
+        }),
+      ).not.toBeNull();
     },
   );
 
-  it('匿名用户不能生成或查看邀请码', async () => {
+  it('匿名用户不能生成, 查看或删除邀请码', async () => {
+    const invite = await createInvite();
     await ctx
       .req()
       .post('/api/users/registration-invites')
       .send({ role: Role.student })
       .expect(401);
     await ctx.req().get('/api/users/registration-invites').expect(401);
+    await ctx
+      .req()
+      .delete(`/api/users/registration-invites/${invite.id}`)
+      .expect(401);
+    expect(
+      await ctx.prisma.registrationInvite.findUnique({
+        where: { id: invite.id },
+      }),
+    ).not.toBeNull();
+  });
+
+  it('删除未使用的邀请码后无法注册, 其他邀请码保持可用', async () => {
+    const invite = await createInvite();
+    const otherInvite = await createInvite();
+    const res = await ctx
+      .req()
+      .delete(`/api/users/registration-invites/${invite.id}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+    expect(responseData<{ success: boolean }>(res)).toEqual({ success: true });
+    const list = await ctx
+      .req()
+      .get('/api/users/registration-invites')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+    expect(
+      responseData<RegistrationInvite[]>(list).map((item) => item.id),
+    ).toEqual([otherInvite.id]);
+    await register(invite.code).expect(400);
+    expect(
+      await ctx.prisma.user.findUnique({
+        where: { username: 'registered_user' },
+      }),
+    ).toBeNull();
+    await register(otherInvite.code).expect(201);
+    await ctx
+      .req()
+      .delete(`/api/users/registration-invites/${invite.id}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(404);
+  });
+
+  it('删除已使用的邀请码不影响已注册账号', async () => {
+    const invite = await createInvite();
+    const registered = await register(invite.code).expect(201);
+    const user = responseData<User>(registered);
+    await ctx
+      .req()
+      .delete(`/api/users/registration-invites/${invite.id}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+    expect(
+      await ctx.prisma.registrationInvite.findUnique({
+        where: { id: invite.id },
+      }),
+    ).toBeNull();
+    expect(
+      await ctx.prisma.user.findUnique({ where: { id: user.id } }),
+    ).toMatchObject({ username: user.username, role: Role.student });
+    await ctx
+      .req()
+      .post('/api/auth/login')
+      .send({ username: user.username, password: '123456' })
+      .expect(201);
+    await register(invite.code, 'second_user').expect(400);
+  });
+
+  it('删除不存在的邀请码返回 404', async () => {
+    const res = await ctx
+      .req()
+      .delete(
+        '/api/users/registration-invites/00000000-0000-0000-0000-000000000000',
+      )
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(404);
+    expect(res.body).toMatchObject({ message: '邀请码不存在' });
+  });
+
+  it('并发删除同一邀请码只有一个请求成功', async () => {
+    const invite = await createInvite();
+    const results = await Promise.all(
+      [1, 2].map(() =>
+        ctx
+          .req()
+          .delete(`/api/users/registration-invites/${invite.id}`)
+          .set('Authorization', `Bearer ${adminToken}`),
+      ),
+    );
+    expect(results.map((res) => res.status).sort()).toEqual([200, 404]);
+    expect(
+      await ctx.prisma.registrationInvite.findUnique({
+        where: { id: invite.id },
+      }),
+    ).toBeNull();
   });
 
   it('拒绝缺失或非法的邀请码角色', async () => {
