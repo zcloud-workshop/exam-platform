@@ -73,6 +73,7 @@ Cookie 路径为 `/api`, 始终 `HttpOnly`; 生产环境使用 `Secure` 和 `Sam
 | GET    | `/users`     | 管理角色      | 无                                      | 用户数组             |
 | POST   | `/users/registration-invites` | `super_admin` | Body: 必填 `role`, 取值为系统角色 | `{ id, code, role, createdAt, usedAt }` |
 | GET    | `/users/registration-invites` | `super_admin` | 无 | 邀请码数组, 按创建时间降序 |
+| DELETE | `/users/registration-invites/:id` | `super_admin` | 邀请码 ID | `{ success: true }` |
 | PATCH  | `/users/:id` | `super_admin` | Body: `username?`, `password?`, `role?` | 更新后的用户信息     |
 | DELETE | `/users/:id` | `super_admin` | 无                                      | 删除后的原始用户记录 |
 
@@ -80,7 +81,7 @@ Cookie 路径为 `/api`, 始终 `HttpOnly`; 生产环境使用 `Secure` 和 `Sam
 
 删除最后一名 `super_admin` 返回 `400`, 必须先创建另一名超级管理员或通过 `PATCH /users/:id` 将其他用户设为 `super_admin`; `question_admin` 不具备用户管理权限, 不能替代. 用户拥有题库时返回 `400` 并提示数量, 必须先通过题库更新接口将全部题库转移给其他用户. 原有答题记录和考试分配删除限制继续生效, 有题库分享时也拒绝删除, 需先移除分享关系. 检查和删除在 Serializable 事务中完成, 并发冲突返回 `409`, 客户端应刷新后重试.
 
-邀请码为随机生成的 32 位十六进制字符串, `usedAt=null` 表示未使用. 每个邀请码只能成功注册一次; 角色在生成时确定.
+邀请码为随机生成的 32 位十六进制字符串, `usedAt=null` 表示未使用. 每个邀请码只能成功注册一次; 角色在生成时确定. 超级管理员可删除未使用或已使用的邀请码, 删除后该码无法注册, 已注册账号不受影响. 删除不存在或已删除的邀请码返回 `404`.
 
 ## 题库分享和归档
 
