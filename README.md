@@ -1,6 +1,6 @@
 # Exam Platform
 
-考试题库管理后端, 使用 NestJS 11, TypeScript, PostgreSQL 和 Prisma 6. 提供题库协作, 题目管理, 组卷, 考试分配, 草稿与自动判分, 公开练习, AI 辅助, 文件管理和操作日志. 本仓库不包含前端应用.
+考试题库管理后端, 使用 NestJS 11, TypeScript, PostgreSQL 和 Prisma 6. 提供题库协作, 题目管理, 组卷, 考试分配, 草稿与自动判分, 公开练习, AI 辅助, 文件管理和操作日志. 本仓库不包含前端应用, 前端见 [exam-platform-frontend](https://github.com/zcloud-workshop/exam-platform-frontend).
 
 完整文档集中在 [docs/](docs/README.md):
 
