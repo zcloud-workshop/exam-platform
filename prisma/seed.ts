@@ -1,16 +1,20 @@
+import { randomBytes } from 'crypto';
+
 import { PrismaClient, Role } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
 async function main() {
-  const hashedPassword = await bcrypt.hash('admin123', 10);
+  const existingAdmin = await prisma.user.findUnique({ where: { username: 'admin' } });
+  const initialPassword = randomBytes(12).toString('base64url');
+
   const admin = await prisma.user.upsert({
     where: { username: 'admin' },
     update: {},
     create: {
       username: 'admin',
-      password: hashedPassword,
+      password: await bcrypt.hash(initialPassword, 10),
       role: Role.super_admin,
     },
   });
@@ -26,7 +30,12 @@ async function main() {
     },
   });
 
-  console.log('Seed data created: admin/admin123, default question bank (owned by admin)');
+  if (existingAdmin) {
+    console.log('Admin already exists, password unchanged. Default question bank ensured.');
+  } else {
+    console.log(`Seed data created: admin/${initialPassword}, default question bank (owned by admin)`);
+    console.log('Save the initial password now, rerunning the seed will not reset it.');
+  }
 }
 
 main()
