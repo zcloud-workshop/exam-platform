@@ -114,7 +114,7 @@ pnpm exec node --env-file=.env node_modules/ts-node/dist/bin.js \
   --compiler-options '{"module":"CommonJS"}' prisma/seed.ts
 ```
 
-执行前确认该机器 `.env` 的 `DATABASE_URL` 指向刚完成迁移的数据库, 地址也能从宿主机访问. seed 创建 `admin/admin123`, 已有同名管理员不会被重置; 初次登录后修改密码. 默认题库和 UUID 使用限制见 [初始化数据库](getting-started.md#初始化数据库).
+执行前确认该机器 `.env` 的 `DATABASE_URL` 指向刚完成迁移的数据库, 地址也能从宿主机访问. seed 创建 `admin` 账号, 初始密码由脚本随机生成并只在创建时打印一次, 已有同名管理员不会被重置; 初次登录后修改密码. 默认题库和 UUID 使用限制见 [初始化数据库](getting-started.md#初始化数据库).
 
 ### 启动和检查
 
