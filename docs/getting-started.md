@@ -58,7 +58,7 @@ pnpm exec prisma migrate deploy
 pnpm exec ts-node --compiler-options '{"module":"CommonJS"}' prisma/seed.ts
 ```
 
-[seed.ts](../prisma/seed.ts) 创建 `admin/admin123` 超级管理员和 id 为 `default` 的默认题库, 已存在的同名管理员不会被重置. 初次登录后修改初始密码. 部分业务 DTO 要求 bankId 为 UUID, 因而首次通过接口操作时应创建新题库并使用返回的 id, 不把字符串 `default` 当作 UUID.
+[seed.ts](../prisma/seed.ts) 创建 `admin` 超级管理员和 id 为 `default` 的默认题库, 初始密码由脚本随机生成并只在创建时打印一次, 已存在的同名管理员不会被重置也不会重新生成密码. 初次登录后修改初始密码. 部分业务 DTO 要求 bankId 为 UUID, 因而首次通过接口操作时应创建新题库并使用返回的 id, 不把字符串 `default` 当作 UUID.
 
 ## 启动命令
 
