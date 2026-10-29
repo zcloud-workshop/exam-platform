@@ -8,3 +8,28 @@ allowBuilds:
   esbuild: true                # nest build 底层打包器 (必需)
   unrs-resolver: true          # eslint typescript 解析器依赖 (必需)
   '@scarf/scarf': false        # 纯遥测包, 无功能价值, 关闭
+
+overrides:
+  'proxy-addr': ^2.0.8
+  'handlebars': ^4.7.10
+  'axios': ^1.20.0
+  'follow-redirects': ^1.16.2
+  'form-data@^4': ^4.0.6
+  'multer': ^2.5.0
+  'brace-expansion@^1': ^1.1.21
+  'brace-expansion@^2': ^2.1.7
+  'brace-expansion@^5': ^5.0.12
+  'js-yaml@^3': ^3.15.2
+  'js-yaml@^4': ^4.3.2
+  'deepmerge-ts': ^8.0.0
+  'exceljs>uuid': ^11.1.1
+  'fast-uri': ^3.1.9
+  'qs': ^6.16.1
+  'body-parser': ^2.4.0
+  'esbuild': ^0.28.1
+  'browserslist': ^4.28.7
+  'baseline-browser-mapping': ^2.11.0
+
+# GHSA-gcqx-w48m-w2h4 尚无上游修复版, 发布后移除此补丁并升级.
+patchedDependencies:
+  deepmerge@4.3.1: patches/deepmerge@4.3.1.patch
