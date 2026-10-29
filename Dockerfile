@@ -11,6 +11,7 @@ FROM base AS build
 RUN corepack enable && corepack prepare pnpm@12.8.1 --activate
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches ./patches
 COPY prisma ./prisma
 RUN pnpm install --frozen-lockfile
 
